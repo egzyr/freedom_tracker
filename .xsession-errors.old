@@ -1,4 +1,4 @@
-Xsession: X session started for barte at Thu 26 Mar 07:50:02 CET 2026
+Xsession: X session started for barte at Sat 28 Mar 18:18:54 CET 2026
 dbus-update-activation-environment: setting DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 xrdb: Can't open display ''
 xhost:  unable to open display ""
@@ -22,8 +22,8 @@ dbus-update-activation-environment: setting GDMSESSION=LXDE-pi-labwc
 dbus-update-activation-environment: setting NO_AT_BRIDGE=1
 dbus-update-activation-environment: setting GPG_AGENT_INFO=/run/user/1000/gnupg/S.gpg-agent:0:1
 dbus-update-activation-environment: setting PWD=/home/barte
-00:00:00.098 [ERROR] [EGL] command: eglQueryDeviceStringEXT, error: EGL_BAD_PARAMETER (0x300c), message: "eglQueryDeviceStringEXT"
-00:00:00.100 [ERROR] [EGL] command: eglQueryDeviceStringEXT, error: EGL_BAD_PARAMETER (0x300c), message: "eglQueryDeviceStringEXT"
+00:00:00.094 [ERROR] [EGL] command: eglQueryDeviceStringEXT, error: EGL_BAD_PARAMETER (0x300c), message: "eglQueryDeviceStringEXT"
+00:00:00.097 [ERROR] [EGL] command: eglQueryDeviceStringEXT, error: EGL_BAD_PARAMETER (0x300c), message: "eglQueryDeviceStringEXT"
 no profile matched
 Failure: No such entity
 pgrep: pattern that searches for process name longer than 15 characters will result in zero matches
@@ -31,15 +31,18 @@ Try `pgrep -f' option to match against the complete command line.
 pgrep: pattern that searches for process name longer than 15 characters will result in zero matches
 Try `pgrep -f' option to match against the complete command line.
 
-(polkit-mate-authentication-agent-1:969): GLib-CRITICAL **: 07:50:06.911: g_variant_new_string: assertion 'string != NULL' failed
+(polkit-mate-authentication-agent-1:1015): GLib-CRITICAL **: 18:19:00.087: g_variant_new_string: assertion 'string != NULL' failed
 
-(polkit-mate-authentication-agent-1:969): polkit-mate-1-WARNING **: 07:50:06.912: Failed to register client: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gnome.SessionManager was not provided by any .service files
-00:00:02.660 [ERROR] [types/wlr_linux_dmabuf_v1.c:1240] Failed to get backend DRM FD
-** Message: 07:50:08.383: batt: battery 0 not found
-00:00:03.601 [ERROR] [types/wlr_linux_dmabuf_v1.c:1240] Failed to get backend DRM FD
-** Message: 07:50:09.010: up: Checking for updates
-** Message: 07:50:13.800: up: Cache updated - comparing versions
-** Message: 07:50:19.503: up: Check complete - no updates available
-00:00:20.048 [ERROR] [types/wlr_linux_dmabuf_v1.c:1240] Failed to get backend DRM FD
-00:00:20.048 [ERROR] [types/wlr_linux_dmabuf_v1.c:1240] Failed to get backend DRM FD
-** Message: 11:33:29.149: No keyring secrets found for preconfigured/802-11-wireless-security; asking user.
+(polkit-mate-authentication-agent-1:1015): polkit-mate-1-WARNING **: 18:19:00.088: Failed to register client: GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name org.gnome.SessionManager was not provided by any .service files
+00:00:04.514 [ERROR] [types/wlr_linux_dmabuf_v1.c:1240] Failed to get backend DRM FD
+** Message: 18:19:04.377: batt: battery 0 not found
+00:00:08.531 [ERROR] [types/wlr_linux_dmabuf_v1.c:1240] Failed to get backend DRM FD
+** Message: 18:19:06.733: up: Checking for updates
+** Message: 18:19:14.662: up: Cache updated - comparing versions
+** Message: 18:19:21.885: up: Check complete - 1 updates available
+00:00:38.891 [ERROR] [types/wlr_linux_dmabuf_v1.c:1240] Failed to get backend DRM FD
+00:00:38.891 [ERROR] [types/wlr_linux_dmabuf_v1.c:1240] Failed to get backend DRM FD
+48:01:09.605 [ERROR] [types/wlr_linux_dmabuf_v1.c:1240] Failed to get backend DRM FD
+48:01:09.605 [ERROR] [types/wlr_linux_dmabuf_v1.c:1240] Failed to get backend DRM FD
+49:10:23.539 [ERROR] [types/wlr_linux_dmabuf_v1.c:1240] Failed to get backend DRM FD
+49:10:23.540 [ERROR] [types/wlr_linux_dmabuf_v1.c:1240] Failed to get backend DRM FD
