@@ -1,38 +1,20 @@
 """
-FreedomTracker Bot v2.8 PRODUCTION
+FreedomTracker Bot v2.9 PRODUCTION
 ══════════════════════════════════════════════════════════════
-NOWE W v2.8 (dodane do v2.7):
-  P01 - Partial TP przy sweepie / dużej pozycji:
-        Gdy size >= partial_tp_min_size i zysk >= partial_tp_pct (domyślnie +3%):
-        → sprzedaj partial_tp_ratio (domyślnie 40%) pozycji MARKET sell
-        → zostaw resztę dla trailing TP i moonbag
-        → cooldown: tylko 1× per pozycję (flaga partial_tp_done)
-        Chroni zyski przy szybkich odbiciach sweepowych
-  P02 - Break-even SL przy +1.5% (było +2.0%):
-        Wcześniej bot czekał +2% do ochrony – teraz +1.5%
-        Przy szybkich odbiciach sweepowych (często +1.5–2%) zysk nie uciekał
-        Przesunięto próg w calculate_sl()
-  P03 - /close SYM – market sell całej pozycji z Telegrama:
-        /close ETH / /close BTC – natychmiastowe zamknięcie
-        Anuluje TP i SL przed zamknięciem
-        Odpowiada final fill price i zrealizowanym PnL (szacowany)
-  P04 - Dzienny reset equity_guard:
-        equity_guard_daily_reset – każdy nowy dzień UTC (00:00) resetuje:
-        starting_eq = curr_eq (nowa baza) i equity_guard_fired = False
-        Zapobiega blokadzie bota po tygodniach działania
+NOWE W v2.9 – ANTYSPAM:
+  A01 - SL tg() tylko gdy TYP SL się zmienia (Grid→Breakeven lub nowy SL).
+        Techniczne korekty ceny SL: tylko print w konsoli, zero spamu TG.
+  A02 - SL hysteresis: wejście w Breakeven przy +1.7%, powrót do Grid dopiero
+        przy <+1.0%. Eliminuje oscylowanie Grid↔Breakeven przy granicy +1.5%.
+  A03 - TP: tg() tylko przy faktycznym POSTAWIENIU lub PRZESUNIĘCIU TP.
+        "trailing za X%" → tylko print, nigdy TG.
+  A04 - SL cooldown TG: max 1 wiadomość per symbol co 10 minut.
+        Nawet przy zmianie typu – nie bombarduje.
 
-ZACHOWANE Z v2.7:
+ZACHOWANE Z v2.8:
+  P01..P04 – Partial TP 40%, BE SL +1.5%, /close, daily guard reset
   N01..N08 – 5 sesji sweepowych, DCA boost, /buy, /sessions
   B01..B16 – wszystkie bugi naprawione
-  S01..S03 – initial entry, /pnl, /grid
-
-ARCHITEKTURA v2.8:
-  calculate_sl()         → breakeven przy +1.5% (było +2%)
-  check_partial_tp()     → 40% market sell gdy +3% zysk przy dużej pozycji
-  check_initial_entry()  → market buy gdy pozycja=0 i sweep
-  check_dca_sweep_add()  → market boost gdy pozycja>0 i sweep głębiej
-  /close SYM             → ręczne zamknięcie całości z Telegrama
-  equity_guard daily     → reset bazy każdy nowy dzień UTC
 ══════════════════════════════════════════════════════════════
 """
 
@@ -70,6 +52,15 @@ trade_log           = []   # [(symbol, pnl, time)]
 grid_resetting      = {}   # race condition fix
 grid_reset_time     = {}
 equity_guard_day    = ""   # P04: data ostatniego resetu equity guard (YYYY-MM-DD)
+# ── A01/A04: antyspam SL ──────────────────────────────────────────────────────
+sl_last_type        = {}   # {symbol: "Breakeven"|"Grid SL"|"Grid Anchor"|"Fallback"}
+sl_tg_cooldown      = {}   # {symbol: timestamp} – ostatni TG dla SL
+SL_TG_COOLDOWN_SEC  = 600  # A04: max 1 wiad. SL per 10 minut
+# ── A02: hysteresis breakeven ─────────────────────────────────────────────────
+be_active           = {}   # {symbol: bool} – czy jesteśmy w trybie breakeven
+BE_ENTER_PCT        = 0.017  # +1.7% → wejdź w breakeven
+BE_EXIT_PCT         = 0.010  # +1.0% → wyjdź z breakeven (wróć do Grid SL)
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ── SESJE SWEEPOWE – definicje ─────────────────────────────────────────────────
 # Każda sesja: (nazwa, UTC_start_h, UTC_start_min, UTC_end_h, UTC_end_min,
@@ -248,13 +239,31 @@ def next_session_info():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-# ── DYNAMICZNY SL ─────────────────────────────────────────────────────────────
+# ── DYNAMICZNY SL z hysteresis (A02) ─────────────────────────────────────────
 def calculate_sl(symbol, cfg, entry, curr_price, buys):
+    """
+    Priorytety SL:
+    1. Breakeven (hysteresis A02):
+       - WEJDŹ gdy profit >= BE_ENTER_PCT (+1.7%)
+       - ZOSTAŃ gdy be_active i profit >= BE_EXIT_PCT (+1.0%)
+       - WYJDŹ gdy profit < BE_EXIT_PCT → wróć do Grid SL
+    2. Grid SL live: 2% pod najniższym aktywnym DCA buy
+    3. Grid Anchor: ostatnio zapamiętane dno
+    4. Fallback: grid_depth + 3% od entry
+    """
     if entry <= 0:
         return 0, "Brak entry"
+
     profit_pct = (curr_price - entry) / entry
 
-    if profit_pct >= 0.015:   # P02: breakeven przy +1.5% (było +2.0%)
+    # A02: hysteresis – sprawdź czy wejść/zostać/wyjść z breakeven
+    currently_be = be_active.get(symbol, False)
+    if profit_pct >= BE_ENTER_PCT:
+        be_active[symbol] = True
+    elif currently_be and profit_pct < BE_EXIT_PCT:
+        be_active[symbol] = False   # wyjdź z breakeven bo cena cofnęła mocniej
+
+    if be_active.get(symbol):
         return entry * 1.001, "Breakeven 🔒"
 
     if buys:
@@ -558,7 +567,7 @@ def check_partial_tp(symbol, cfg, size, entry, curr_price, sells):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-# ── MANAGE SL ─────────────────────────────────────────────────────────────────
+# ── MANAGE SL (A01/A04 antyspam) ─────────────────────────────────────────────
 def manage_sl(symbol, cfg, size, entry, curr_price, equity, buys):
     if size <= 0 or entry <= 0:
         return
@@ -572,14 +581,16 @@ def manage_sl(symbol, cfg, size, entry, curr_price, equity, buys):
 
     if sl_orders:
         current_sl = float(sl_orders[0].get("trigger", {}).get("price", 0))
+        # Delta < 1%: SL już prawie w tym miejscu – nic nie rób, zero TG, zero kasowania
         if abs(current_sl - target_sl) / target_sl < 0.01:
             sl_placed[symbol] = True
             return
+        # Delta >= 1%: trzeba przestawić
         for o in sl_orders:
             gate_request("DELETE", f"/api/v4/futures/usdt/price_orders/{o['id']}")
             time.sleep(0.2)
     else:
-        sl_placed[symbol] = False   # B12
+        sl_placed[symbol] = False
 
     body = {
         "initial": {
@@ -593,19 +604,39 @@ def manage_sl(symbol, cfg, size, entry, curr_price, equity, buys):
         }
     }
     res = gate_request("POST", "/api/v4/futures/usdt/price_orders", body=body)
-    if res.get("id"):
-        sl_placed[symbol] = True
-        dist = (curr_price - target_sl) / curr_price * 100
+    if not res.get("id"):
+        print(f"    SL FAIL {symbol}: {res.get('label','?')}")
+        return
+
+    sl_placed[symbol] = True
+    dist     = (curr_price - target_sl) / curr_price * 100
+    now_ts   = time.time()
+
+    # A01: wykryj typ SL (pierwsze słowo label)
+    sl_type  = label.split()[0]   # "Breakeven", "Grid", "Fallback"
+    prev_type = sl_last_type.get(symbol, "")
+    type_changed = (sl_type != prev_type)
+    sl_last_type[symbol] = sl_type
+
+    # A04: cooldown 10 min – wyślij TG tylko jeśli:
+    #   • pierwszy raz (brak prev_type) LUB typ się zmienił LUB minęło >10 min
+    last_tg  = sl_tg_cooldown.get(symbol, 0)
+    cooldown_ok = (now_ts - last_tg) > SL_TG_COOLDOWN_SEC
+
+    if not prev_type or type_changed or cooldown_ok:
+        sl_tg_cooldown[symbol] = now_ts
         tg(
-            f"🛡 <b>SL USTAWIONY</b>\n"
+            f"🛡 <b>SL {'ZMIENIONY' if type_changed and prev_type else 'USTAWIONY'}</b>\n"
             f"{cfg['icon']} {symbol}\n"
             f"  Typ:     {label}\n"
             f"  SL @     {fmt_price(target_sl, symbol)}\n"
             f"  Dystans: {dist:.1f}%"
+            + (f"\n  ⬆️ poprzednio: {prev_type}" if type_changed and prev_type else "")
         )
-        print(f"    SL {symbol} @ {target_sl:.2f} ({label})")
-    else:
-        print(f"    SL FAIL {symbol}: {res.get('label','?')}")
+    # Zawsze loguj do konsoli
+    print(f"    SL {symbol} @ {target_sl:.2f} ({label})"
+          + (" [TG wysłany]" if not prev_type or type_changed or cooldown_ok else " [TG pominięty]"))
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 # ── CHECK EXECUTED ────────────────────────────────────────────────────────────
@@ -662,10 +693,14 @@ def check_executed(symbol, cfg, size, entry, price, sells):
                 f"╚══ {datetime.now().strftime('%H:%M')} ══╝"
             )
             if size == 0:
-                sl_placed[symbol] = False
+                sl_placed[symbol]       = False
+                partial_tp_done[symbol] = False   # P01
                 trailing_ref.pop(symbol, None)
                 grid_bottom_cache.pop(symbol, None)
-                partial_tp_done[symbol] = False   # P01: reset flagi partial TP
+                # A01/A02: reset antyspam SL przy zamknięciu pozycji
+                sl_last_type.pop(symbol, None)
+                sl_tg_cooldown.pop(symbol, None)
+                be_active[symbol] = False
 
     last_size[symbol] = size
 
@@ -729,14 +764,15 @@ def manage_tp(symbol, cfg, size, entry, curr_price, sells):
             tp_price, pct = place_tp(symbol, cfg, tradeable, curr_price, entry)
             if tp_price > 0:
                 tg(
-                    f"📈 <b>TRAILING TP</b>\n"
+                    f"📈 <b>TRAILING TP PRZESUNIĘTY</b>\n"
                     f"{cfg['icon']} {symbol}\n"
                     f"  Wzrost:  +{rise*100:.1f}% od {ref:.2f}\n"
                     f"  Nowy TP: {fmt_price(tp_price, symbol)} (+{pct:.1f}%)\n"
                     f"  Moonbag: {cfg['min_moonbag']}k 🔒"
                 )
         else:
-            sell_p  = float(sells[0].get("price", 0))
+            # A03: tylko konsola – zero TG przy oczekiwaniu na trailing
+            sell_p  = float(sells[0].get("price", 0)) if sells else 0
             brakuje = (cfg["trailing_trigger"] - rise) * 100
             print(f"    TP {symbol} @ {sell_p:.2f} | trailing za {brakuje:.1f}%")
     else:
@@ -1305,23 +1341,22 @@ def run():
     global BOT_ACTIVE, session_pnl_start, equity_guard_fired, equity_guard_day
     threading.Thread(target=listen_telegram, daemon=True).start()
     print("=" * 58)
-    print("  FreedomTracker Bot v2.8 PRODUCTION")
-    print("  Partial TP | BE +1.5% | /close | daily guard reset")
+    print("  FreedomTracker Bot v2.9 PRODUCTION")
+    print("  Antyspam SL/TP | hysteresis BE | /close | daily guard")
     print("  /help /status /pozycje /sl /sweep /grid /pnl /buy /close")
     print("=" * 58)
     tg(
-        "╔══ 🤖 <b>FreedomTracker v2.8 PRODUCTION</b> ══╗\n"
+        "╔══ 🤖 <b>FreedomTracker v2.9 PRODUCTION</b> ══╗\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🆕 Partial TP: sprzedaj 40% gdy +3% zysk\n"
-        "🆕 Break-even SL przy +1.5% (było +2%)\n"
-        "🆕 /close ETH/BTC – zamknij pozycję market\n"
-        "🆕 Dzienny reset equity guard (baza odnawia się)\n"
+        "🔕 Antyspam SL: TG tylko przy zmianie typu lub co 10 min\n"
+        "📊 Hysteresis BE: wejście +1.7%, wyjście +1.0%\n"
+        "🔕 Antyspam TP: TG tylko przy postawieniu/przesunięciu\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🌐 5 sesji sweepowych 24/7 aktywne\n"
-        "⚡ DCA Boost market buy przy sweepach\n"
-        "📈 2× większe kontrakty (risk 4%)\n"
+        "💰 Partial TP 40% przy +3% zysku\n"
+        "🔴 /close ETH/BTC – zamknij pozycję\n"
+        "🌐 5 sesji sweepowych aktywne 24/7\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "📖 /help — lista komend | /sessions — sesje\n"
+        "📖 /help — lista komend\n"
         "╚══════════════════════╝"
     )
 
