@@ -1,34 +1,38 @@
 """
-FreedomTracker Bot v2.7 FINAL
+FreedomTracker Bot v2.8 PRODUCTION
 ══════════════════════════════════════════════════════════════
-NOWE W v2.7:
-  N01 - 5 sesji sweepowych 24/7 zamiast samego London:
-          • London Open      07:00–10:00 UTC  (najsilniejsza)
-          • London Lunch     11:30–13:00 UTC  (fake reversal)
-          • NY Open          13:30–16:00 UTC  (momentum sweep)
-          • NY Reversal      19:00–21:00 UTC  (end-of-day trap)
-          • Asia Midnight    00:00–03:00 UTC  (thin liquidity)
-        Każda sesja ma swój cooldown wejścia + osobny sweep_mult
-  N02 - Sweep DODAJE do istniejącej pozycji (DCA boost market buy)
-        gdy mamy pozycję i cena schodzi głębiej podczas sweepów
-        NY/Asia – limit cooldown 1× per sesję żeby nie przebić max_contracts
-  N03 - /buy SYM – komenda testowania market buy z Telegrama
-        Odpowiada fill_price, qty, ID zlecenia
-  N04 - SOL wyłączony (active: False) – za mały margin przy ~290 USD equity
-  N05 - risk_per_level: 0.02 → 0.04 (2× większe kontrakty)
-  N06 - /sessions – nowa komenda: które sesje aktywne + countdown do następnej
-  N07 - Sweep alert wysyłany dla każdej aktywnej sesji (nie tylko London)
-  N08 - /status pokazuje aktualną sesję i sweep status
+NOWE W v2.8 (dodane do v2.7):
+  P01 - Partial TP przy sweepie / dużej pozycji:
+        Gdy size >= partial_tp_min_size i zysk >= partial_tp_pct (domyślnie +3%):
+        → sprzedaj partial_tp_ratio (domyślnie 40%) pozycji MARKET sell
+        → zostaw resztę dla trailing TP i moonbag
+        → cooldown: tylko 1× per pozycję (flaga partial_tp_done)
+        Chroni zyski przy szybkich odbiciach sweepowych
+  P02 - Break-even SL przy +1.5% (było +2.0%):
+        Wcześniej bot czekał +2% do ochrony – teraz +1.5%
+        Przy szybkich odbiciach sweepowych (często +1.5–2%) zysk nie uciekał
+        Przesunięto próg w calculate_sl()
+  P03 - /close SYM – market sell całej pozycji z Telegrama:
+        /close ETH / /close BTC – natychmiastowe zamknięcie
+        Anuluje TP i SL przed zamknięciem
+        Odpowiada final fill price i zrealizowanym PnL (szacowany)
+  P04 - Dzienny reset equity_guard:
+        equity_guard_daily_reset – każdy nowy dzień UTC (00:00) resetuje:
+        starting_eq = curr_eq (nowa baza) i equity_guard_fired = False
+        Zapobiega blokadzie bota po tygodniach działania
 
-ZACHOWANE BUGI NAPRAWIONE (v2.5.x):
-  B01..B16 – wszystkie 16 poprawek z poprzednich wersji
-  S01..S03 – initial entry market, /pnl, /grid
+ZACHOWANE Z v2.7:
+  N01..N08 – 5 sesji sweepowych, DCA boost, /buy, /sessions
+  B01..B16 – wszystkie bugi naprawione
+  S01..S03 – initial entry, /pnl, /grid
 
-ARCHITEKTURA SWEEPÓW v2.7:
-  detect_sweep()        → zwraca (bool, reason, session_name, sweep_mult)
-  check_initial_entry() → market buy gdy pozycja=0 i sweep aktywny
-  check_dca_sweep_add() → market buy boost gdy pozycja>0 i sweep głębszy
-  manage_dca()          → limit DCA siatka z sweep_mult na L1
+ARCHITEKTURA v2.8:
+  calculate_sl()         → breakeven przy +1.5% (było +2%)
+  check_partial_tp()     → 40% market sell gdy +3% zysk przy dużej pozycji
+  check_initial_entry()  → market buy gdy pozycja=0 i sweep
+  check_dca_sweep_add()  → market boost gdy pozycja>0 i sweep głębiej
+  /close SYM             → ręczne zamknięcie całości z Telegrama
+  equity_guard daily     → reset bazy każdy nowy dzień UTC
 ══════════════════════════════════════════════════════════════
 """
 
@@ -59,11 +63,13 @@ grid_bottom_cache   = {}
 last_margin_alert   = {}
 last_entry_session  = {}   # cooldown initial entry  {symbol: session_key}
 last_boost_session  = {}   # cooldown DCA boost add  {symbol: session_key}
+partial_tp_done     = {}   # P01: czy partial TP już odpalił {symbol: bool}
 equity_guard_fired  = False
 session_pnl_start   = 0
 trade_log           = []   # [(symbol, pnl, time)]
 grid_resetting      = {}   # race condition fix
 grid_reset_time     = {}
+equity_guard_day    = ""   # P04: data ostatniego resetu equity guard (YYYY-MM-DD)
 
 # ── SESJE SWEEPOWE – definicje ─────────────────────────────────────────────────
 # Każda sesja: (nazwa, UTC_start_h, UTC_start_min, UTC_end_h, UTC_end_min,
@@ -81,22 +87,26 @@ CONFIG = {
     "BTC_USDT": {
         "icon": "🟠", "active": True,
         "min_moonbag": 2, "dca_levels": 5, "grid_step": 0.03,
-        "max_contracts": 20, "risk_per_level": 0.04,   # N05: 0.02→0.04 (2× większe)
+        "max_contracts": 20, "risk_per_level": 0.04,
         "tp_pct": 0.05, "tp_pct_from_now": 0.04, "trailing_trigger": 0.02,
         "sl_pct": 0.20,
         "price_decimals": 0,
         "min_free_margin": 80, "min_equity": 150, "contract_multiplier": 0.0001,
         "grid_reset_pct": 0.05,
+        # P01: partial TP – sprzedaj 40% gdy +3% i size >= 4k kontraktów
+        "partial_tp_pct": 0.03, "partial_tp_ratio": 0.40, "partial_tp_min_size": 4,
     },
     "ETH_USDT": {
         "icon": "🔵", "active": True,
         "min_moonbag": 1, "dca_levels": 5, "grid_step": 0.02,
-        "max_contracts": 15, "risk_per_level": 0.04,   # N05: 0.02→0.04
+        "max_contracts": 15, "risk_per_level": 0.04,
         "tp_pct": 0.05, "tp_pct_from_now": 0.04, "trailing_trigger": 0.02,
         "sl_pct": 0.13,
         "price_decimals": 2,
         "min_free_margin": 80, "min_equity": 150, "contract_multiplier": 0.01,
         "grid_reset_pct": 0.05,
+        # P01: partial TP – sprzedaj 40% gdy +3% i size >= 3k kontraktów
+        "partial_tp_pct": 0.03, "partial_tp_ratio": 0.40, "partial_tp_min_size": 3,
     },
     "SOL_USDT": {
         "icon": "🟣", "active": False,  # N04: wyłączony – min_equity 250 przy ~290 USD
@@ -107,6 +117,7 @@ CONFIG = {
         "price_decimals": 2,
         "min_free_margin": 200, "min_equity": 250, "contract_multiplier": 0.1,
         "grid_reset_pct": 0.05,
+        "partial_tp_pct": 0.03, "partial_tp_ratio": 0.40, "partial_tp_min_size": 2,
     }
 }
 
@@ -243,7 +254,7 @@ def calculate_sl(symbol, cfg, entry, curr_price, buys):
         return 0, "Brak entry"
     profit_pct = (curr_price - entry) / entry
 
-    if profit_pct >= 0.02:
+    if profit_pct >= 0.015:   # P02: breakeven przy +1.5% (było +2.0%)
         return entry * 1.001, "Breakeven 🔒"
 
     if buys:
@@ -490,6 +501,63 @@ def do_reset_grid(symbol, curr_price, equity, reason="manual"):
         grid_resetting[symbol] = False
 
 
+# ── P01: PARTIAL TP – zabezpiecz 40% zysku przy +3% ──────────────────────────
+def check_partial_tp(symbol, cfg, size, entry, curr_price, sells):
+    """
+    Gdy pozycja duża (>= partial_tp_min_size) i zysk >= partial_tp_pct (+3%):
+    → anuluj istniejący TP limit
+    → sprzedaj partial_tp_ratio (40%) MARKET (ioc, reduce_only)
+    → pozostała część będzie obsługiwana przez manage_tp z nowym, wyższym TP
+    Odpala tylko raz per pozycję (partial_tp_done[symbol]).
+    Reset flagi gdy pozycja zamknięta (size==0 w check_executed).
+    """
+    if partial_tp_done.get(symbol):
+        return
+    if size < cfg.get("partial_tp_min_size", 3):
+        return
+    if entry <= 0:
+        return
+
+    profit_pct = (curr_price - entry) / entry
+    if profit_pct < cfg.get("partial_tp_pct", 0.03):
+        return
+
+    partial_qty = fmt_size(size * cfg.get("partial_tp_ratio", 0.40))
+    # Upewnij się że zostaje co najmniej moonbag
+    if size - partial_qty < cfg["min_moonbag"]:
+        partial_qty = max(0, int(size) - cfg["min_moonbag"])
+    if partial_qty <= 0:
+        return
+
+    # Anuluj istniejące TP limity żeby nie było konfliktu reduce_only
+    for o in sells:
+        gate_request("DELETE", f"/api/v4/futures/usdt/orders/{o['id']}")
+        time.sleep(0.2)
+
+    res = gate_request("POST", "/api/v4/futures/usdt/orders", body={
+        "contract": symbol, "size": -partial_qty,
+        "price": "0", "tif": "ioc", "reduce_only": True,
+    })
+    if res.get("id"):
+        fill    = float(res.get("fill_price", curr_price) or curr_price)
+        pnl_est = partial_qty * cfg["contract_multiplier"] * (fill - entry)
+        partial_tp_done[symbol] = True
+        print(f"    PARTIAL TP {symbol} -{partial_qty}k @ ~{fill:.2f} (+{profit_pct*100:.1f}%)")
+        tg(
+            f"💰 <b>PARTIAL TP WYKONANY</b>\n"
+            f"{cfg['icon']} {symbol}\n"
+            f"  Sprzedano: {partial_qty}k ({cfg.get('partial_tp_ratio',0.4)*100:.0f}%)\n"
+            f"  Fill:      ~{fill:.2f} (+{profit_pct*100:.1f}%)\n"
+            f"  Entry:     {entry:.2f}\n"
+            f"  PnL est:   <b>~{pnl_est:+.2f} USDT</b>\n"
+            f"  Pozostaje: {int(size)-partial_qty:.0f}k (trailing TP aktywny)\n"
+            f"╚══ {datetime.now().strftime('%H:%M')} ══╝"
+        )
+    else:
+        print(f"    PARTIAL TP FAIL {symbol}: {res.get('label','?')}")
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 # ── MANAGE SL ─────────────────────────────────────────────────────────────────
 def manage_sl(symbol, cfg, size, entry, curr_price, equity, buys):
     if size <= 0 or entry <= 0:
@@ -597,6 +665,7 @@ def check_executed(symbol, cfg, size, entry, price, sells):
                 sl_placed[symbol] = False
                 trailing_ref.pop(symbol, None)
                 grid_bottom_cache.pop(symbol, None)
+                partial_tp_done[symbol] = False   # P01: reset flagi partial TP
 
     last_size[symbol] = size
 
@@ -778,6 +847,10 @@ def manage_logic(symbol, cfg, free_margin, equity, all_positions):
 
     if size > 0:
         check_executed(symbol, cfg, size, entry, price, sells)
+        # P01: sprawdź partial TP przed manage_tp (sells mogą być anulowane)
+        check_partial_tp(symbol, cfg, size, entry, price, sells)
+        # odśwież sells po ewentualnym partial TP
+        sells = [o for o in get_orders(symbol) if isize(o.get("size", 0)) < 0]
         manage_sl(symbol, cfg, size, entry, price, equity, buys)
         if size > cfg["min_moonbag"]:
             manage_tp(symbol, cfg, size, entry, price, sells)
@@ -1103,6 +1176,79 @@ def listen_telegram():
                         lines.append(f"╚══ {datetime.now().strftime('%H:%M %d.%m')} ══╝")
                         tg("\n".join(lines))
 
+                    # ── P03: /close – market sell całej pozycji ──────────────
+                    elif msg.startswith("/close"):
+                        parts   = msg.split()
+                        sym_arg = parts[1].upper() if len(parts) > 1 else ""
+                        if not sym_arg:
+                            tg(
+                                "🔴 <b>Użycie: /close ETH / /close BTC</b>\n"
+                                "Zamyka całą pozycję MARKET (IOC, reduce_only)\n"
+                                "⚠️ Anuluje TP i SL przed zamknięciem"
+                            )
+                        else:
+                            sym_full = sym_arg if "_USDT" in sym_arg else sym_arg + "_USDT"
+                            if sym_full not in CONFIG:
+                                tg(f"❌ Nieznany symbol: {sym_arg}")
+                            else:
+                                cfg_c   = CONFIG[sym_full]
+                                all_p   = get_positions()
+                                pos_c   = None
+                                if isinstance(all_p, list):
+                                    pos_c = next((p for p in all_p
+                                                  if p["contract"] == sym_full), None)
+                                sz_c = float(pos_c["size"]) if pos_c else 0
+                                if sz_c <= 0:
+                                    tg(f"ℹ️ {sym_full}: brak otwartej pozycji long")
+                                else:
+                                    entry_c = float(pos_c.get("entry_price", 0))
+                                    p_c     = get_price(sym_full)
+                                    tg(
+                                        f"🔴 Zamykam {sym_full} {sz_c:.0f}k @ ~{p_c:.2f}…\n"
+                                        f"  Anulowanie TP/SL…"
+                                    )
+                                    # 1. Anuluj wszystkie open orders (TP limity)
+                                    ords_c = get_orders(sym_full)
+                                    for o in ords_c:
+                                        gate_request("DELETE",
+                                                     f"/api/v4/futures/usdt/orders/{o['id']}")
+                                        time.sleep(0.15)
+                                    # 2. Anuluj price orders (SL)
+                                    pords_c = get_price_orders(sym_full)
+                                    for o in pords_c:
+                                        gate_request("DELETE",
+                                                     f"/api/v4/futures/usdt/price_orders/{o['id']}")
+                                        time.sleep(0.15)
+                                    # 3. Market sell
+                                    res_c = gate_request("POST", "/api/v4/futures/usdt/orders",
+                                                         body={
+                                                             "contract": sym_full,
+                                                             "size": -int(sz_c),
+                                                             "price": "0", "tif": "ioc",
+                                                             "reduce_only": True,
+                                                         })
+                                    if res_c.get("id"):
+                                        fill_c  = float(res_c.get("fill_price", p_c) or p_c)
+                                        pnl_c   = sz_c * cfg_c["contract_multiplier"] * (fill_c - entry_c)
+                                        pct_c   = (fill_c - entry_c) / entry_c * 100 if entry_c > 0 else 0
+                                        # Reset local state
+                                        sl_placed[sym_full]       = False
+                                        partial_tp_done[sym_full] = False
+                                        trailing_ref.pop(sym_full, None)
+                                        grid_bottom_cache.pop(sym_full, None)
+                                        tg(
+                                            f"{'✅' if pnl_c >= 0 else '🔴'} <b>ZAMKNIĘTO POZYCJĘ</b>\n"
+                                            f"{cfg_c['icon']} {sym_full}\n"
+                                            f"  Qty:    {sz_c:.0f}k\n"
+                                            f"  Fill:   ~{fill_c:.2f} ({pct_c:+.1f}%)\n"
+                                            f"  Entry:  {entry_c:.2f}\n"
+                                            f"  PnL:    <b>{pnl_c:+.2f} USDT</b>\n"
+                                            f"╚══ {datetime.now().strftime('%H:%M')} ══╝"
+                                        )
+                                    else:
+                                        tg(f"❌ Close FAILED: {res_c.get('label','?')} – "
+                                           f"{res_c.get('message','')[:80]}")
+
                     # ── /reset_dca ────────────────────────────────────────────
                     elif msg.startswith("/reset_dca"):
                         parts   = msg.split()
@@ -1128,7 +1274,7 @@ def listen_telegram():
                     # ── /help ─────────────────────────────────────────────────
                     elif msg == "/help":
                         tg(
-                            "╔══ 📖 <b>KOMENDY v2.7</b> ══╗\n"
+                            "╔══ 📖 <b>KOMENDY v2.8</b> ══╗\n"
                             "━━━━━━━━━━━━━━━\n"
                             "📊 /status      — equity, margin, PnL, sesja\n"
                             "📦 /pozycje     — otwarte pozycje\n"
@@ -1139,6 +1285,7 @@ def listen_telegram():
                             "📐 /grid        — aktywna siatka DCA\n"
                             "💹 /pnl         — P&L od startu bota\n"
                             "🛒 /buy ETH/BTC — test market buy\n"
+                            "🔴 /close ETH/BTC — zamknij pozycję market\n"
                             "━━━━━━━━━━━━━━━\n"
                             "▶️ /start       — uruchom bota\n"
                             "🛑 /stop        — zatrzymaj bota\n"
@@ -1155,27 +1302,24 @@ def listen_telegram():
 
 # ── GŁÓWNA PĘTLA ──────────────────────────────────────────────────────────────
 def run():
-    global BOT_ACTIVE, session_pnl_start, equity_guard_fired
+    global BOT_ACTIVE, session_pnl_start, equity_guard_fired, equity_guard_day
     threading.Thread(target=listen_telegram, daemon=True).start()
     print("=" * 58)
-    print("  FreedomTracker Bot v2.7 FINAL")
-    print("  5 sesji sweepowych | DCA boost market | /buy | /sessions")
-    print("  /help /status /pozycje /sl /trailing /sweep /grid /pnl /buy")
+    print("  FreedomTracker Bot v2.8 PRODUCTION")
+    print("  Partial TP | BE +1.5% | /close | daily guard reset")
+    print("  /help /status /pozycje /sl /sweep /grid /pnl /buy /close")
     print("=" * 58)
     tg(
-        "╔══ 🤖 <b>FreedomTracker v2.7 FINAL</b> ══╗\n"
+        "╔══ 🤖 <b>FreedomTracker v2.8 PRODUCTION</b> ══╗\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🌐 5 sesji sweepowych 24/7:\n"
-        "   🇬🇧 London Open  07–10 UTC  ×2.5\n"
-        "   ☕ London Lunch  11:30–13 UTC ×2.0\n"
-        "   🇺🇸 NY Open      13:30–16 UTC ×2.0\n"
-        "   🌆 NY Reversal   19–21 UTC   ×1.8\n"
-        "   🌏 Asia Midnight 00–03 UTC   ×1.5\n"
+        "🆕 Partial TP: sprzedaj 40% gdy +3% zysk\n"
+        "🆕 Break-even SL przy +1.5% (było +2%)\n"
+        "🆕 /close ETH/BTC – zamknij pozycję market\n"
+        "🆕 Dzienny reset equity guard (baza odnawia się)\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "⚡ DCA Boost: market buy gdy mamy pozycję i sweep głębszy\n"
-        "🛒 /buy ETH/BTC – test market buy z Telegrama\n"
-        "📈 2× większe kontrakty (risk 4% per level)\n"
-        "🔴 SOL wyłączony (za mało equity)\n"
+        "🌐 5 sesji sweepowych 24/7 aktywne\n"
+        "⚡ DCA Boost market buy przy sweepach\n"
+        "📈 2× większe kontrakty (risk 4%)\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "📖 /help — lista komend | /sessions — sesje\n"
         "╚══════════════════════╝"
@@ -1203,6 +1347,25 @@ def run():
                 starting_eq       = eq
                 session_pnl_start = eq
                 print(f"  Equity startowe: {starting_eq:.2f} USDT")
+
+            # P04: reset equity guard każdego nowego dnia UTC (00:00)
+            today_str = datetime.utcnow().strftime("%Y-%m-%d")
+            if equity_guard_day != today_str and eq > 0:
+                if equity_guard_day != "":   # nie przy pierwszym uruchomieniu
+                    prev_base = starting_eq
+                    starting_eq        = eq
+                    session_pnl_start  = eq
+                    equity_guard_fired = False
+                    equity_guard_day   = today_str
+                    print(f"  [P04] Dzienny reset equity guard: {prev_base:.2f} → {eq:.2f} USDT")
+                    tg(
+                        f"🌅 <b>Dzienny reset equity guard</b>\n"
+                        f"  Nowa baza: <b>{eq:.2f} USDT</b>\n"
+                        f"  Guard odpali przy: <b>{eq*0.75:.2f} USDT</b> (-25%)\n"
+                        f"╚══ {datetime.now().strftime('%H:%M %d.%m')} ══╝"
+                    )
+                else:
+                    equity_guard_day = today_str   # ustaw przy starcie bez resetu
 
             # B13: equity guard – odpala tylko raz
             if starting_eq > 0 and eq < starting_eq * 0.75 and not equity_guard_fired:
