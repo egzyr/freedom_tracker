@@ -117,7 +117,7 @@ MAX_TOTAL_EXPOSURE_PCT  = 0.75   # 75% equity łącznie wszystkie symbole
 #     Przy equity ~290 USD zalecany zakres: 30–60 USD.
 #     Powyżej 60 USD bot szybko wypełni limit M02 (75% equity).
 # ══════════════════════════════════════════════════════════════
-TARGET_ENTRY_USD = 40   # ← JEDYNA LICZBA DO EDYCJI
+TARGET_ENTRY_USD = 20   # ← JEDYNA LICZBA DO EDYCJI
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── SESJE SWEEPOWE ─────────────────────────────────────────────────────────────
@@ -135,7 +135,7 @@ CONFIG = {
         "base_qty": 0,                # 0 = tryb automatyczny (TARGET_ENTRY_USD)
         "min_moonbag": 2, "dca_levels": 5, "grid_step": 0.015,
         "max_contracts": 30,
-        "risk_per_level": 0.1,
+        "risk_per_level": 0.08,
         "tp_pct": 0.04, "tp_pct_from_now": 0.04, "trailing_trigger": 0.02,
         "sl_pct": 0.20,
         "price_decimals": 0,
@@ -148,7 +148,7 @@ CONFIG = {
         "base_qty": 0,                # 0 = tryb automatyczny (TARGET_ENTRY_USD)
         "min_moonbag": 1, "dca_levels": 5, "grid_step": 0.012,
         "max_contracts": 25,
-        "risk_per_level": 0.10,
+        "risk_per_level": 0.08,
         "tp_pct": 0.04, "tp_pct_from_now": 0.04, "trailing_trigger": 0.02,
         "sl_pct": 0.13,
         "price_decimals": 2,
