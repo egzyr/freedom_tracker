@@ -133,10 +133,10 @@ CONFIG = {
     "BTC_USDT": {
         "icon": "🟠", "active": True,
         "base_qty": 0,                # 0 = tryb automatyczny (TARGET_ENTRY_USD)
-        "min_moonbag": 2, "dca_levels": 5, "grid_step": 0.03,
-        "max_contracts": 20,
-        "risk_per_level": 0.04,
-        "tp_pct": 0.05, "tp_pct_from_now": 0.04, "trailing_trigger": 0.02,
+        "min_moonbag": 2, "dca_levels": 5, "grid_step": 0.015,
+        "max_contracts": 30,
+        "risk_per_level": 0.1,
+        "tp_pct": 0.04, "tp_pct_from_now": 0.04, "trailing_trigger": 0.02,
         "sl_pct": 0.20,
         "price_decimals": 0,
         "min_free_margin": 80, "min_equity": 150, "contract_multiplier": 0.0001,
@@ -146,10 +146,10 @@ CONFIG = {
     "ETH_USDT": {
         "icon": "🔵", "active": True,
         "base_qty": 0,                # 0 = tryb automatyczny (TARGET_ENTRY_USD)
-        "min_moonbag": 1, "dca_levels": 5, "grid_step": 0.02,
-        "max_contracts": 15,
-        "risk_per_level": 0.04,
-        "tp_pct": 0.05, "tp_pct_from_now": 0.04, "trailing_trigger": 0.02,
+        "min_moonbag": 1, "dca_levels": 5, "grid_step": 0.012,
+        "max_contracts": 25,
+        "risk_per_level": 0.10,
+        "tp_pct": 0.04, "tp_pct_from_now": 0.04, "trailing_trigger": 0.02,
         "sl_pct": 0.13,
         "price_decimals": 2,
         "min_free_margin": 80, "min_equity": 150, "contract_multiplier": 0.01,
