@@ -1,5 +1,5 @@
 """
-FreedomTracker Bot v2.11 PRODUCTION
+FreedomTracker Bot v2.12 PRODUCTION
 ══════════════════════════════════════════════════════════════
 HISTORIA WERSJI:
 
@@ -101,6 +101,23 @@ BE_EXIT_PCT         = 0.010
 # ── M01/M02: limity ekspozycji ────────────────────────────────────────────────
 MAX_EXPOSURE_PER_SYMBOL = 0.50   # 50% equity na jeden symbol
 MAX_TOTAL_EXPOSURE_PCT  = 0.75   # 75% equity łącznie wszystkie symbole
+
+# ══════════════════════════════════════════════════════════════
+# ⚙️  DOCELOWA WARTOŚĆ USD NA JEDEN POZIOM DCA / WEJŚCIE SWEEP
+#     Bot sam przelicza ile kontraktów BTC/ETH kupić żeby trafić
+#     w tę kwotę – dzięki temu BTC i ETH mają podobne rozmiary.
+#
+#     Przykłady przy TARGET_ENTRY_USD = 40:
+#       BTC @ 85,000:  40 / (85000 × 0.0001) =  4 kontrakty ≈ $34
+#       ETH @  2,000:  40 / (2000  × 0.01)   =  2 kontrakty ≈ $40
+#       ETH @  3,000:  40 / (3000  × 0.01)   =  1 kontrakt  ≈ $30
+#       BTC @ 95,000:  40 / (95000 × 0.0001) =  4 kontrakty ≈ $38
+#
+#     Żeby mieć WIĘKSZE pozycje → zwiększ TARGET_ENTRY_USD.
+#     Przy equity ~290 USD zalecany zakres: 30–60 USD.
+#     Powyżej 60 USD bot szybko wypełni limit M02 (75% equity).
+# ══════════════════════════════════════════════════════════════
+TARGET_ENTRY_USD = 40   # ← JEDYNA LICZBA DO EDYCJI
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── SESJE SWEEPOWE ─────────────────────────────────────────────────────────────
@@ -115,8 +132,9 @@ SWEEP_SESSIONS = [
 CONFIG = {
     "BTC_USDT": {
         "icon": "🟠", "active": True,
+        "base_qty": 0,                # 0 = tryb automatyczny (TARGET_ENTRY_USD)
         "min_moonbag": 2, "dca_levels": 5, "grid_step": 0.03,
-        "max_contracts": 20,          # hardcap – get_dynamic_max_contracts może tylko zmniejszyć
+        "max_contracts": 20,
         "risk_per_level": 0.04,
         "tp_pct": 0.05, "tp_pct_from_now": 0.04, "trailing_trigger": 0.02,
         "sl_pct": 0.20,
@@ -127,8 +145,9 @@ CONFIG = {
     },
     "ETH_USDT": {
         "icon": "🔵", "active": True,
+        "base_qty": 0,                # 0 = tryb automatyczny (TARGET_ENTRY_USD)
         "min_moonbag": 1, "dca_levels": 5, "grid_step": 0.02,
-        "max_contracts": 15,          # hardcap
+        "max_contracts": 15,
         "risk_per_level": 0.04,
         "tp_pct": 0.05, "tp_pct_from_now": 0.04, "trailing_trigger": 0.02,
         "sl_pct": 0.13,
@@ -139,6 +158,7 @@ CONFIG = {
     },
     "SOL_USDT": {
         "icon": "🟣", "active": False,
+        "base_qty": 0,                # 0 = tryb automatyczny (TARGET_ENTRY_USD)
         "min_moonbag": 1, "dca_levels": 5, "grid_step": 0.03,
         "max_contracts": 10,
         "risk_per_level": 0.04,
@@ -150,7 +170,6 @@ CONFIG = {
         "partial_tp_pct": 0.03, "partial_tp_ratio": 0.40, "partial_tp_min_size": 2,
     }
 }
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 def isize(v):
@@ -281,11 +300,34 @@ def is_market_crashing():
     return change < -0.03
 
 def get_dynamic_size(symbol, equity, curr_price):
-    """Bazowa wielkość 1 pozycji DCA = risk_per_level% equity."""
-    cfg        = CONFIG[symbol]
-    target_val = equity * cfg["risk_per_level"]
-    mult       = cfg["contract_multiplier"]
-    return max(1, int(target_val / (curr_price * mult)))
+    """
+    Tryb MANUALNY:    cfg['base_qty'] > 0 → stała liczba kontraktów z CONFIG.
+    Tryb AUTOMATYCZNY: cfg['base_qty'] == 0 → oblicza ile kontraktów odpowiada
+                       TARGET_ENTRY_USD USD, dzięki czemu BTC i ETH mają
+                       podobną wartość pozycji niezależnie od ceny coina.
+
+    Przykład przy TARGET_ENTRY_USD=40, equity=290:
+      BTC @ 85000: 40/(85000×0.0001) = 4k ≈ $34  (max przez equity cap: $43)
+      ETH @  2000: 40/(2000×0.01)    = 2k ≈ $40
+      ETH @  3000: 40/(3000×0.01)    = 1k ≈ $30  (cena wzrosła → mniej kont.)
+
+    Session multipliery (×1.5, ×2.0 itd.) są nakładane NA WIERZCH
+    w miejscu wywołania – tu zwracamy tylko bazę.
+    """
+    cfg      = CONFIG[symbol]
+    override = cfg.get("base_qty", 0)
+    if override > 0:
+        return override                        # TRYB MANUALNY
+
+    # TRYB AUTOMATYCZNY – cel: TARGET_ENTRY_USD per poziom
+    # Zabezpieczenie: nie przekroczymy 15% equity per poziom nawet gdy
+    # TARGET_ENTRY_USD jest ustawione zbyt wysoko względem konta.
+    max_by_equity = equity * 0.15
+    target_usd    = min(TARGET_ENTRY_USD, max_by_equity)
+    contract_val  = curr_price * cfg["contract_multiplier"]
+    if contract_val <= 0:
+        return 1
+    return max(1, int(target_usd / contract_val))
 
 
 # ── SESJE – helpery ───────────────────────────────────────────────────────────
@@ -998,6 +1040,7 @@ def listen_telegram():
                     elif msg == "/dca_on":
                         DCA_ENABLED = True
                         tg("▶️ <b>DCA włączone</b>")
+                      
 
                     elif msg.startswith("/buy"):
                         parts   = msg.split()
@@ -1551,19 +1594,4 @@ def run():
                     f"📦 Exp:     <b>{exp_r:.0f}/{eq*MAX_TOTAL_EXPOSURE_PCT:.0f} USD</b>\n"
                     f"━━━━━━━━━━━━━━━\n"
                     f"📋 Zlecenia:{ords if ords else ' Brak'}\n"
-                    f"╚══ {datetime.now().strftime('%H:%M %d.%m')} ══╝"
-                )
-        else:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Pauza...")
-        time.sleep(20)
-
-
-if __name__ == "__main__":
-    try:
-        run()
-    except KeyboardInterrupt:
-        print("\nBot zatrzymany (CTRL+C)")
-        tg("🛑 <b>Bot zatrzymany ręcznie</b>")
-    except Exception as e:
-        print(f"\nKRYTYCZNY BŁĄD: {e}")
-        tg(f"🚨 <b>KRYTYCZNY BŁĄD!</b>\n<code>{str(e)[:200]}</code>")
+                    f"╚�
