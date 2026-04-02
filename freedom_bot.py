@@ -132,7 +132,7 @@ SWEEP_SESSIONS = [
 CONFIG = {
     "BTC_USDT": {
         "icon": "🟠", "active": True,
-        "base_qty": 0,                # 0 = tryb automatyczny (TARGET_ENTRY_USD)
+        "base_qty": 6,                # 0 = tryb automatyczny (TARGET_ENTRY_USD)
         "min_moonbag": 2, "dca_levels": 5, "grid_step": 0.015,
         "max_contracts": 30,
         "risk_per_level": 0.08,
